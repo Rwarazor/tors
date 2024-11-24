@@ -28,6 +28,9 @@ void ConsumeAllMesages(int socket, Callback callback) {
             perror("recv");
             throw std::runtime_error("errno");
         }
+        if (bytesRecvd == 0) {
+            return;
+        }
         std::stringstream input(std::string(buffer, buffer + bytesRecvd));
         while (input.peek() != std::char_traits<char>::eof()) {
             proto::SomeMessage msg;
