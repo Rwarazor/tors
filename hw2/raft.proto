@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+package raft.proto;
+
+// A Raft Node which can be leader, candidate or follower
+// or transition between these states
+service Node {
+    // Invoked by candidates to gather votes
+    rpc RequestVote (RequestVoteRequest) returns (RequestVoteResponse) {}
+
+    // Invoked by leader to replicate log entries; also used ad heartbeat
+    rpc AppendEntries (AppendEntriesRequest) returns (AppendEntriesResponse) {}
+}
+
+message RequestVoteRequest {
+    int64 term = 1; // candidate's term
+    int64 candidateId = 2;
+    int64 lastLogIndex = 3;
+    int64 lastLogTerm = 4;
+}
+
+message RequestVoteResponse {
+    int64 term = 1; // voter's currentTerm, may or may not equal to candidate's term
+    bool voteGranted = 2;
+}
+
+message UpdateData {
+    string path = 1;
+    string partialVal = 2;
+}
+
+enum WALEntryType {
+    HEARTBEAT = 0;
+    SET = 1;
+    DELETE = 2;
+    UPDATE = 3;
+}
+
+message WALEntry {
+    WALEntryType type = 1;
+    string key = 2;
+    string val = 3;
+    UpdateData updateData = 4;
+}
+
+message AppendEntriesRequest {
+    int64 term = 1; // leader's term
+    int64 leaderId = 2;
+    int64 prevLogIndex = 3;
+    int64 lastLogTerm = 4;
+    repeated WALEntry entries = 5;
+    int64 leaderCommitIndex = 6;
+}
+
+message AppendEntriesResponse {
+    int64 term = 1;   // follower's currentTerm, may or may not equal to leader's term
+    bool success = 2; // true if follower contained entry
+                      // matching prevLogIndex and prevLogTerm
+}
