@@ -30,7 +30,7 @@ target_link_libraries(raft_grpc_proto
   ${_GRPC_GRPCPP}
   ${_PROTOBUF_LIBPROTOBUF})
 
-add_executable(service service.cpp)
+add_executable(service service.cpp raft.cpp network.cpp)
 target_link_libraries(service
   raft_grpc_proto
   absl::check

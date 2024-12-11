@@ -13,10 +13,12 @@ service Node {
 }
 
 message RequestVoteRequest {
-    int64 term = 1; // candidate's term
-    int64 candidateId = 2;
-    int64 lastLogIndex = 3;
-    int64 lastLogTerm = 4;
+    uint32 __id = 1; // identification
+
+    int64 term = 2; // candidate's term
+    int64 candidateId = 3;
+    int64 lastLogIndex = 4;
+    int64 lastLogTerm = 5;
 }
 
 message RequestVoteResponse {
@@ -44,12 +46,14 @@ message WALEntry {
 }
 
 message AppendEntriesRequest {
-    int64 term = 1; // leader's term
-    int64 leaderId = 2;
-    int64 prevLogIndex = 3;
-    int64 lastLogTerm = 4;
-    repeated WALEntry entries = 5;
-    int64 leaderCommitIndex = 6;
+    uint32 __id = 1; // identification
+
+    int64 term = 2; // leader's term
+    int64 leaderId = 3;
+    int64 prevLogIndex = 4;
+    int64 lastLogTerm = 5;
+    repeated WALEntry entries = 6;
+    int64 leaderCommitIndex = 7;
 }
 
 message AppendEntriesResponse {
