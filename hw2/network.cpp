@@ -17,15 +17,64 @@ namespace hw2 {
 
 namespace network {
 
+using grpc::CallbackServerContext;
+using grpc::ServerUnaryReactor;
+
+namespace {
+
+class ServiceImpl : public proto::Node::CallbackService {
+  public:
+    ServiceImpl(Node *node) : node_(node) {}
+
+  private:
+    Node *node_;
+
+    ServerUnaryReactor *RequestVote(CallbackServerContext *context,
+                                    const proto::RequestVoteRequest *request,
+                                    proto::RequestVoteResponse *response) override {
+        class Reactor : public grpc::ServerUnaryReactor {
+          public:
+            Reactor(Node *node, const proto::RequestVoteRequest *request,
+                    proto::RequestVoteResponse *response) {
+                node->HandleRequestVote(request->__id(), request, response);
+                Finish(grpc::Status::OK);
+            }
+
+          private:
+            void OnDone() override { delete this; }
+        };
+        return new Reactor(node_, request, response);
+    }
+
+    ServerUnaryReactor *AppendEntries(CallbackServerContext *context,
+                                      const proto::AppendEntriesRequest *request,
+                                      proto::AppendEntriesResponse *response) override {
+        class Reactor : public grpc::ServerUnaryReactor {
+          public:
+            Reactor(Node *node, const proto::AppendEntriesRequest *request,
+                    proto::AppendEntriesResponse *response) {
+                node->HandleAppendEntries(request->__id(), request, response);
+                Finish(grpc::Status::OK);
+            }
+
+          private:
+            void OnDone() override { delete this; }
+        };
+        return new Reactor(node_, request, response);
+    }
+};
+
+} // namespace
+
 Node::Node(Id id) : id_(id) {
     Serve();
 }
 
-void Node::SendRequestVote(Id to, ::raft::proto::RequestVoteRequest &request,
+void Node::SendRequestVote(Id to, proto::RequestVoteRequest &request,
                            Node::SendRequestVoteCallbackT callback) {
     class Reader {
       public:
-        Reader(::raft::proto::Node::Stub *stub, ::raft::proto::RequestVoteRequest *request,
+        Reader(proto::Node::Stub *stub, proto::RequestVoteRequest *request,
                Node::SendRequestVoteCallbackT callback)
             : callback_(std::move(callback)) {
             stub->async()->RequestVote(&context_, request, &response_, [this](grpc::Status status) {
@@ -37,7 +86,7 @@ void Node::SendRequestVote(Id to, ::raft::proto::RequestVoteRequest &request,
       private:
         Node::SendRequestVoteCallbackT callback_;
 
-        ::raft::proto::RequestVoteResponse response_;
+        proto::RequestVoteResponse response_;
         grpc::ClientContext context_{};
     };
     TryEnsureConnection(to);
@@ -45,11 +94,11 @@ void Node::SendRequestVote(Id to, ::raft::proto::RequestVoteRequest &request,
     new Reader(stubs_.at(to).get(), &request, std::move(callback));
 }
 
-void Node::SendAppendEntries(Id to, ::raft::proto::AppendEntriesRequest &request,
+void Node::SendAppendEntries(Id to, proto::AppendEntriesRequest &request,
                              Node::SendAppendEntriesCallbackT callback) {
     class Reader {
       public:
-        Reader(::raft::proto::Node::Stub *stub, ::raft::proto::AppendEntriesRequest *request,
+        Reader(proto::Node::Stub *stub, proto::AppendEntriesRequest *request,
                Node::SendAppendEntriesCallbackT callback)
             : callback_(std::move(callback)) {
             stub->async()->AppendEntries(&context_, request, &response_,
@@ -62,46 +111,12 @@ void Node::SendAppendEntries(Id to, ::raft::proto::AppendEntriesRequest &request
       private:
         Node::SendAppendEntriesCallbackT callback_;
 
-        ::raft::proto::AppendEntriesResponse response_;
+        proto::AppendEntriesResponse response_;
         grpc::ClientContext context_{};
     };
     TryEnsureConnection(to);
     request.set___id(id_);
     new Reader(stubs_.at(to).get(), &request, std::move(callback));
-}
-
-grpc::ServerUnaryReactor *Node::RequestVote(grpc::CallbackServerContext *context,
-                                            const ::raft::proto::RequestVoteRequest *request,
-                                            ::raft::proto::RequestVoteResponse *response) {
-    class Reactor : public grpc::ServerUnaryReactor {
-      public:
-        Reactor(Node *node, const ::raft::proto::RequestVoteRequest *request,
-                ::raft::proto::RequestVoteResponse *response) {
-            node->HandleRequestVote(request->__id(), request, response);
-            Finish(grpc::Status::OK);
-        }
-
-      private:
-        void OnDone() override { delete this; }
-    };
-    return new Reactor(this, request, response);
-}
-
-grpc::ServerUnaryReactor *Node::AppendEntries(grpc::CallbackServerContext *context,
-                                              const ::raft::proto::AppendEntriesRequest *request,
-                                              ::raft::proto::AppendEntriesResponse *response) {
-    class Reactor : public grpc::ServerUnaryReactor {
-      public:
-        Reactor(Node *node, const ::raft::proto::AppendEntriesRequest *request,
-                ::raft::proto::AppendEntriesResponse *response) {
-            node->HandleAppendEntries(request->__id(), request, response);
-            Finish(grpc::Status::OK);
-        }
-
-      private:
-        void OnDone() override { delete this; }
-    };
-    return new Reactor(this, request, response);
 }
 
 void Node::TryEnsureConnection(Id otherId) {
@@ -111,15 +126,17 @@ void Node::TryEnsureConnection(Id otherId) {
     int port = 50000 + otherId;
     auto channel = grpc::CreateChannel("localhost:" + std::to_string(port),
                                        grpc::InsecureChannelCredentials());
-    stubs_.emplace(otherId, ::raft::proto::Node::NewStub(channel));
+    stubs_.emplace(otherId, proto::Node::NewStub(channel));
 }
 
 void Node::Serve() {
+    service = std::make_shared<ServiceImpl>(this);
+
     int port = 50000 + id_;
     std::string server_address("0.0.0.0:" + std::to_string(port));
     grpc::ServerBuilder builder;
     builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
-    builder.RegisterService(this);
+    builder.RegisterService(service.get());
     server_ = builder.BuildAndStart();
     servingThread_ = std::thread([&]() {
         std::cout << "Serving thread started!\n";

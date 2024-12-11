@@ -1,5 +1,6 @@
 #pragma once
 
+#include "grpcpp/impl/service_type.h"
 #include "raft.grpc.pb.h"
 #include "raft.pb.h"
 
@@ -17,49 +18,42 @@ namespace hw2 {
 
 namespace network {
 
-class Node : ::raft::proto::Node::CallbackService {
+namespace proto = ::raft::proto;
+
+class Node {
   public:
     using Id = size_t;
+    using Status = grpc::Status;
 
     Node(Id id);
 
-    using SendRequestVoteCallbackT =
-        std::function<void(grpc::Status, ::raft::proto::RequestVoteResponse)>;
-    void SendRequestVote(Id to, ::raft::proto::RequestVoteRequest &request,
+    using SendRequestVoteCallbackT = std::function<void(Status, proto::RequestVoteResponse)>;
+    void SendRequestVote(Id to, proto::RequestVoteRequest &request,
                          SendRequestVoteCallbackT callback);
 
-    using SendAppendEntriesCallbackT =
-        std::function<void(grpc::Status, ::raft::proto::AppendEntriesResponse)>;
-    void SendAppendEntries(Id to, ::raft::proto::AppendEntriesRequest &request,
+    using SendAppendEntriesCallbackT = std::function<void(Status, proto::AppendEntriesResponse)>;
+    void SendAppendEntries(Id to, proto::AppendEntriesRequest &request,
                            SendAppendEntriesCallbackT callback);
 
-    void virtual HandleRequestVote(Id from, const ::raft::proto::RequestVoteRequest *request,
-                                   ::raft::proto::RequestVoteResponse *response) = 0;
+    void virtual HandleRequestVote(Id from, const proto::RequestVoteRequest *request,
+                                   proto::RequestVoteResponse *response) = 0;
 
-    void virtual HandleAppendEntries(Id from, const ::raft::proto::AppendEntriesRequest *request,
-                                     ::raft::proto::AppendEntriesResponse *response) = 0;
+    void virtual HandleAppendEntries(Id from, const proto::AppendEntriesRequest *request,
+                                     proto::AppendEntriesResponse *response) = 0;
     virtual ~Node() = default;
 
   protected:
     Id id_;
 
   private:
-    grpc::ServerUnaryReactor *RequestVote(grpc::CallbackServerContext *context,
-                                          const ::raft::proto::RequestVoteRequest *request,
-                                          ::raft::proto::RequestVoteResponse *response) override;
-
-    grpc::ServerUnaryReactor *
-    AppendEntries(grpc::CallbackServerContext *context,
-                  const ::raft::proto::AppendEntriesRequest *request,
-                  ::raft::proto::AppendEntriesResponse *response) override;
-
     void TryEnsureConnection(Id otherId);
 
     void Serve();
 
+    std::shared_ptr<grpc::Service> service;
     std::unique_ptr<grpc::Server> server_;
     std::thread servingThread_;
-    std::map<Id, std::unique_ptr<::raft::proto::Node::Stub>> stubs_;
+    std::map<Id, std::unique_ptr<proto::Node::Stub>> stubs_;
 };
 
 } // namespace network
