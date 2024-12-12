@@ -15,10 +15,9 @@ service Node {
 message RequestVoteRequest {
     uint32 __id = 1; // identification
 
-    int64 term = 2; // candidate's term
-    int64 candidateId = 3;
-    int64 lastLogIndex = 4;
-    int64 lastLogTerm = 5;
+    uint64 term = 2; // candidate's term
+    uint64 lastLogIndex = 4;
+    uint64 lastLogTerm = 5;
 }
 
 message RequestVoteResponse {
@@ -39,25 +38,27 @@ enum WALEntryType {
 }
 
 message WALEntry {
-    WALEntryType type = 1;
-    string key = 2;
-    string val = 3;
-    UpdateData updateData = 4;
+    uint64 term = 1;
+    WALEntryType type = 2;
+    string key = 3;
+    string val = 4;
+    UpdateData updateData = 5;
 }
 
 message AppendEntriesRequest {
     uint32 __id = 1; // identification
 
-    int64 term = 2; // leader's term
-    int64 leaderId = 3;
-    int64 prevLogIndex = 4;
-    int64 lastLogTerm = 5;
-    repeated WALEntry entries = 6;
-    int64 leaderCommitIndex = 7;
+    uint64 term = 2; // leader's term
+    uint64 prevLogIndex = 3;
+    uint64 lastLogTerm = 4;
+    repeated WALEntry entries = 5;
+    uint64 leaderCommitIndex = 6;
 }
 
 message AppendEntriesResponse {
-    int64 term = 1;   // follower's currentTerm, may or may not equal to leader's term
-    bool success = 2; // true if follower contained entry
-                      // matching prevLogIndex and prevLogTerm
+    uint64 term = 1;                // follower's currentTerm, may or may not equal to leader's term
+    bool success = 2;              // true if follower contained entry
+                                   // matching prevLogIndex and prevLogTerm
+    int64 lastReplicatedIndex = 3; // used by follower when rejecting AppendEntries
+                                   // because of conflict to signal last replicated log
 }
