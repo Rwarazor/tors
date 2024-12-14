@@ -59,6 +59,6 @@ message AppendEntriesResponse {
     uint64 term = 1;                // follower's currentTerm, may or may not equal to leader's term
     bool success = 2;              // true if follower contained entry
                                    // matching prevLogIndex and prevLogTerm
-    int64 lastReplicatedIndex = 3; // used by follower when rejecting AppendEntries
+    uint64 lastReplicatedIndex = 3; // used by follower when rejecting AppendEntries
                                    // because of conflict to signal last replicated log
 }

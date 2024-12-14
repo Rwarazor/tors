@@ -18,20 +18,21 @@ namespace hw2 {
 
 namespace network {
 
+using Status = grpc::Status;
+
 namespace proto = ::raft::proto;
 
 class Node {
   public:
     using Id = size_t;
-    using Status = grpc::Status;
 
     Node(Id id);
 
-    using SendRequestVoteCallbackT = std::function<void(Status, proto::RequestVoteResponse)>;
+    using SendRequestVoteCallbackT = std::function<void(Status, const proto::RequestVoteResponse&)>;
     void SendRequestVote(Id to, proto::RequestVoteRequest &request,
                          SendRequestVoteCallbackT callback);
 
-    using SendAppendEntriesCallbackT = std::function<void(Status, proto::AppendEntriesResponse)>;
+    using SendAppendEntriesCallbackT = std::function<void(Status, const proto::AppendEntriesResponse&)>;
     void SendAppendEntries(Id to, proto::AppendEntriesRequest &request,
                            SendAppendEntriesCallbackT callback);
 

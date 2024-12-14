@@ -15,5 +15,5 @@ int main(int argc, char **argv) {
     }
     hw2::raft::Node node(id);
 
-    sleep(100);
+    sleep(1000);
 }
