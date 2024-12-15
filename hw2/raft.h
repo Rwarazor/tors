@@ -21,6 +21,8 @@ struct UpdateData {
 
 class NodeImpl;
 
+constexpr size_t TOTAL_IDS = 3;
+
 class Node {
   public:
     using Id = size_t;
@@ -30,24 +32,19 @@ class Node {
     Id ThisId();
     std::optional<Id> LeaderId();
 
-    enum class GetStatus {
-        OK_DONE,       // returned node's view of key
-        ERR_STARTING,  // node is acquiring wal after startup
-        ERR_NO_LEADER, // no active leader
-    };
-    using CallbackGetT = std::function<void(GetStatus, std::optional<ValT>)>;
-    void Get(KeyT key, CallbackGetT callback);
+    std::optional<ValT> Get(KeyT key);
 
-    enum class WriteStatus {
-        OK_DONE,           // write is persisted
-        OK_NOT_LEADER,     // no work done, node is not the leader
-        ERR_KEY_NOT_FOUND, // delete or update addressing nonexistent key
-        ERR_NO_LEADER,     // no active leader
+    enum class SetStatus {
+        OK_DONE,              // write is persisted
+        OK_NOT_LEADER,        // no work done, node is not the leader
+        ERR_NO_LEADER,        // no active leader
+        ERR_NO_LONGER_LEADER, // node was a leader on the start of the request, but converted to
+                              // follower
     };
-    using CallbackWriteT = std::function<void(WriteStatus)>;
-    void Set(KeyT key, ValT val, CallbackWriteT callback);
-    void Delete(KeyT key, CallbackWriteT callback);
-    void Update(KeyT key, UpdateData data, CallbackWriteT callback);
+    using CallbackSetT = std::function<void(SetStatus)>;
+    void Set(KeyT key, ValT val, CallbackSetT callback);
+    void Delete(KeyT key, CallbackSetT callback);
+    void Update(KeyT key, UpdateData data, CallbackSetT callback);
 
   private:
     std::shared_ptr<NodeImpl> impl_;

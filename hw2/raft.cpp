@@ -9,7 +9,6 @@
 #include <grpcpp/support/status.h>
 
 #include <atomic>
-#include <condition_variable>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -17,7 +16,6 @@
 #include <queue>
 #include <stdexcept>
 #include <thread>
-#include <tuple>
 
 namespace hw2 {
 
@@ -26,7 +24,6 @@ namespace raft {
 class NodeImpl {
     static constexpr auto ELECTION_TIMEOUT = std::chrono::seconds(5);
     static constexpr auto HEARTBEAT_INTERVAL = std::chrono::seconds(1);
-    static constexpr Node::Id TOTAL_IDS = 3;
 
   public:
     NodeImpl(Node::Id id) : networkNode_(*this, id), id_(id) {
@@ -46,16 +43,66 @@ class NodeImpl {
         }
     }
 
-    void Get(KeyT key, Node::CallbackGetT callback) {
-        throw std::runtime_error("Not implemented NodeImpl::Get");
+    std::optional<ValT> Get(KeyT key) {
+        std::unique_lock lock(mutex_);
+        std::cout << "Getting key " << key << '\n';
+        return state_.contains(key) ? std::make_optional(state_[key]) : std::nullopt;
     }
-    void Set(KeyT key, ValT val, Node::CallbackWriteT callback) {
-        throw std::runtime_error("Not implemented NodeImpl::Set");
+
+    void Set(KeyT key, ValT val, Node::CallbackSetT callback) {
+        std::unique_lock lock(mutex_);
+        std::cout << "Trying to set key " << key << '\n';
+        if (!LeaderId().has_value()) {
+            std::cout << "Set failed no leader elected\n";
+            lock.unlock();
+            callback(Node::SetStatus::ERR_NO_LEADER);
+            return;
+        } else if (LeaderId() != ThisId()) {
+            std::cout << "Set not performed node is not the leader\n";
+            lock.unlock();
+            callback(Node::SetStatus::OK_NOT_LEADER);
+            return;
+        }
+        ::raft::proto::WALEntry entry;
+        entry.set_type(::raft::proto::WALEntryType::SET);
+        entry.set_term(currentTerm_);
+        entry.set_key(key);
+        entry.set_val(val);
+        ongoingRequests_.push({
+            .logIndex = log_.size(),
+            .callback = std::move(callback),
+        });
+        log_.push_back(entry);
+        std::cout << "Tying to commit set";
     }
-    void Delete(KeyT key, Node::CallbackWriteT callback) {
-        throw std::runtime_error("Not implemented NodeImpl::Delete");
+
+    void Delete(KeyT key, Node::CallbackSetT callback) {
+        std::unique_lock lock(mutex_);
+        std::cout << "Trying to delete key " << key << '\n';
+        if (!LeaderId().has_value()) {
+            std::cout << "Delete failed no leader elected\n";
+            lock.unlock();
+            callback(Node::SetStatus::ERR_NO_LEADER);
+            return;
+        } else if (LeaderId() != ThisId()) {
+            std::cout << "Delete not performed node is not the leader\n";
+            lock.unlock();
+            callback(Node::SetStatus::OK_NOT_LEADER);
+            return;
+        }
+        ::raft::proto::WALEntry entry;
+        entry.set_type(::raft::proto::WALEntryType::DELETE);
+        entry.set_term(currentTerm_);
+        entry.set_key(key);
+        ongoingRequests_.push({
+            .logIndex = log_.size(),
+            .callback = std::move(callback),
+        });
+        log_.push_back(entry);
+        std::cout << "Tying to commit delete";
     }
-    void Update(KeyT key, UpdateData data, Node::CallbackWriteT callback) {
+
+    void Update(KeyT key, UpdateData data, Node::CallbackSetT callback) {
         throw std::runtime_error("Not implemented NodeImpl::Update");
     }
 
@@ -67,8 +114,6 @@ class NodeImpl {
   private:
     void Apply(::raft::proto::WALEntry entry) {
         switch (entry.type()) {
-        case ::raft::proto::WALEntryType::HEARTBEAT:
-            return;
         case ::raft::proto::WALEntryType::SET:
             state_[entry.key()] = entry.val();
             return;
@@ -93,7 +138,7 @@ class NodeImpl {
     }
 
     void Work() {
-        std::lock_guard lg(mutex_);
+        std::unique_lock lock(mutex_);
         if (status_ != Status::LEADER &&
             std::chrono::system_clock::now() - lastLeaderTime_ > ELECTION_TIMEOUT) //
         {
@@ -102,11 +147,16 @@ class NodeImpl {
         while (commitIndex_ > lastAppliedIndex_) {
             Apply(log_[lastAppliedIndex_++]);
         }
-        if (status_ == Status::LEADER) {
+        if (status_ != Status::LEADER) {
+            // MUST BE CALLED LAST
+            FinishRequests(std::move(lock), true);
+        } else {
             if (std::chrono::system_clock::now() - lastHeartbeatTime_ > HEARTBEAT_INTERVAL) {
                 Heartbeat();
             }
             UpdateCommitIndex();
+            // MUST BE CALLED LAST
+            FinishRequests(std::move(lock));
         }
     }
 
@@ -130,8 +180,8 @@ class NodeImpl {
             if (id != ThisId()) {
                 networkNode_.SendRequestVote(
                     id, request,
-                    [this](network::Status status,
-                           const ::raft::proto::RequestVoteResponse &response) {
+                    [id = id, this](network::Status status,
+                                    const ::raft::proto::RequestVoteResponse &response) {
                         std::lock_guard lg(mutex_);
                         if (status.ok()) {
                             if (response.term() > currentTerm_) {
@@ -140,6 +190,7 @@ class NodeImpl {
                             }
                             if (response.votegranted() && status_ == Status::CANDIDATE &&
                                 response.term() == currentTerm_) {
+                                std::cout << "Received positive vote\n";
                                 // we check status && term because we might have recieved a delayed
                                 // vote from previous election
                                 votesReceived_++;
@@ -156,22 +207,28 @@ class NodeImpl {
     void ConvertToLeader() {
         std::cout << "Converting to leader on term " << currentTerm_ << "\n";
         status_ = Status::LEADER;
+        if (log_.size() > commitIndex_) {
+            std::cout << "Found uncommited log entries, removing " << log_.size() - commitIndex_
+                      << " entries\n";
+            log_.resize(commitIndex_);
+        }
         nextIndex_.clear();
+        for (Node::Id id = 1; id <= TOTAL_IDS; ++id) {
+            if (id != ThisId()) {
+                nextIndex_[id] = log_.size();
+            }
+        }
         matchIndex_.clear();
-        Heartbeat(true);
+        Heartbeat();
     }
 
-    void Heartbeat(bool initialHeartbeat=false) {
-        std::cout << "Sending heartbeat\n";
-        ::raft::proto::WALEntry entry;
-        entry.set_type(::raft::proto::WALEntryType::HEARTBEAT);
-        entry.set_term(currentTerm_);
-        WriteToWAL(entry, !initialHeartbeat);
+    void Heartbeat() {
+        // std::cout << "Sending heartbeat\n";
+        PropagateWAL();
     }
 
-    void WriteToWAL(const ::raft::proto::WALEntry &entry, bool sendEntries = true) {
+    void PropagateWAL() {
         lastHeartbeatTime_ = std::chrono::system_clock::now();
-        log_.push_back(entry);
         ::raft::proto::AppendEntriesRequest request;
         request.set_term(currentTerm_);
         request.set_leadercommitindex(commitIndex_);
@@ -180,14 +237,14 @@ class NodeImpl {
                 request.set_prevlogindex(nextIndex_[id]);
                 request.set_lastlogterm(nextIndex_[id] == 0 ? 0 : log_[nextIndex_[id] - 1].term());
                 request.clear_entries();
-                if (sendEntries) {
-                    for (size_t i = nextIndex_[id]; i < log_.size(); ++i) {
-                        request.mutable_entries()->Add(::raft::proto::WALEntry(entry));
-                    }
-                    nextIndex_[id] = log_.size();
+                for (size_t i = nextIndex_[id]; i < log_.size(); ++i) {
+                    request.mutable_entries()->Add(::raft::proto::WALEntry(log_[i]));
                 }
-                std::cout << "Sending " << request.entries_size() << " entries to node " << id
-                          << "\n";
+                nextIndex_[id] = log_.size();
+                if (request.entries_size() > 0) {
+                    std::cout << "Sending " << request.entries_size() << " entries to node " << id
+                              << "\n";
+                }
                 networkNode_.SendAppendEntries(
                     id, request,
                     [lastindex = nextIndex_[id], id,
@@ -233,6 +290,35 @@ class NodeImpl {
         }
     };
 
+    // only Set-like operations are ever ongoing
+    struct OngoingRequest {
+        size_t logIndex;
+        Node::CallbackSetT callback;
+    };
+
+    std::queue<OngoingRequest> ongoingRequests_;
+
+    void FinishRequests(std::unique_lock<std::mutex> &&lock, bool fail = false) {
+        std::vector<OngoingRequest> requests;
+        while (!ongoingRequests_.empty() && ongoingRequests_.front().logIndex < commitIndex_) {
+            requests.emplace_back(std::move(ongoingRequests_.front()));
+            ongoingRequests_.pop();
+        }
+        if (fail) {
+            while (!ongoingRequests_.empty()) {
+                requests.emplace_back(std::move(ongoingRequests_.front()));
+                ongoingRequests_.pop();
+            }
+        }
+        std::size_t commitIndex = commitIndex_;
+        lock.unlock();
+        for (const auto &request : requests) {
+            request.callback(request.logIndex < commitIndex
+                                 ? Node::SetStatus::OK_DONE
+                                 : Node::SetStatus::ERR_NO_LONGER_LEADER);
+        }
+    }
+
     class NetworkNodeImpl : public network::Node {
       public:
         NetworkNodeImpl(NodeImpl &raftNode, network::Node::Id id)
@@ -243,7 +329,7 @@ class NodeImpl {
         void HandleRequestVote(Id from, const ::raft::proto::RequestVoteRequest *request,
                                ::raft::proto::RequestVoteResponse *response) override {
             std::lock_guard lg(raftNode_.mutex_);
-            std::cout << "RequestVote RPC received\n";
+            std::cout << "RequestVote RPC received from node " << from << "\n";
             if (request->term() < raftNode_.currentTerm_) {
                 response->set_votegranted(false);
                 response->set_term(raftNode_.currentTerm_);
@@ -266,20 +352,21 @@ class NodeImpl {
                     raftNode_.lastLeaderTime_ = std::chrono::system_clock::now();
                     std::cout << "RequestVote RPC accepted\n";
                     return;
+                } else {
+                    std::cout << "RequestVote RPC declined too old log\n";
                 }
+            } else {
+                std::cout << "RequestVote RPC declined already voted\n";
             }
             response->set_votegranted(false);
             response->set_term(raftNode_.currentTerm_);
-            std::cout << raftNode_.log_.size() << "  " << (raftNode_.log_.empty() ? 0 : raftNode_.log_.back().term()) << "\n";
-            std::cout << request->lastlogindex() << "  " << request->lastlogterm() << "\n";
-            std::cout << "RequestVote RPC declined too old log\n";
             return;
         };
 
         void HandleAppendEntries(Id from, const ::raft::proto::AppendEntriesRequest *request,
                                  ::raft::proto::AppendEntriesResponse *response) override {
             std::lock_guard lg(raftNode_.mutex_);
-            std::cout << "AppendEntries RPC received\n";
+            // std::cout << "AppendEntries RPC received\n";
             if (request->term() < raftNode_.currentTerm_) {
                 response->set_success(false);
                 response->set_term(raftNode_.currentTerm_);
@@ -291,15 +378,19 @@ class NodeImpl {
                 raftNode_.ConvertToFollower();
                 raftNode_.votedFor_ = from;
             }
+            if (raftNode_.status_ != Status::FOLLOWER) {
+                raftNode_.ConvertToFollower();
+            }
             raftNode_.lastLeaderTime_ = std::chrono::system_clock::now();
             if (raftNode_.log_.size() < request->prevlogindex() ||
                 (request->prevlogindex() != 0 &&
-                 raftNode_.log_.at(request->prevlogindex() - 1).term() != request->lastlogterm())) //
+                 raftNode_.log_.at(request->prevlogindex() - 1).term() !=
+                     request->lastlogterm())) //
             {
                 response->set_success(false);
                 response->set_term(raftNode_.currentTerm_);
                 response->set_lastreplicatedindex(raftNode_.commitIndex_);
-                std::cout << "AppendEntries RPC declined log gap\n";
+                std::cout << "AppendEntries RPC declined log gap or conflict\n";
                 return;
             }
             size_t curIndex = request->prevlogindex();
@@ -316,13 +407,16 @@ class NodeImpl {
             }
             if (request->leadercommitindex() > raftNode_.commitIndex_) {
                 raftNode_.commitIndex_ = std::min(request->leadercommitindex(), curIndex);
+                std::cout << "New commit index " << raftNode_.commitIndex_ << "\n";
             }
             raftNode_.lastLeaderTime_ = std::chrono::system_clock::now();
             response->set_success(true);
             response->set_term(raftNode_.currentTerm_);
             response->set_lastreplicatedindex(raftNode_.commitIndex_);
-            std::cout << "AppendEntries RPC accepted new log size: " << raftNode_.log_.size()
-                      << "\n";
+            if (request->entries_size() > 0) {
+                std::cout << "AppendEntries RPC accepted new log size: " << raftNode_.log_.size()
+                          << " of which " << request->entries_size() << " new entries\n";
+            }
         }
 
       private:
@@ -372,16 +466,19 @@ std::optional<Node::Id> Node::LeaderId() {
     return impl_->LeaderId();
 }
 
-void Node::Get(KeyT key, Node::CallbackGetT callback) {
-    impl_->Get(key, callback);
+std::optional<ValT> Node::Get(KeyT key) {
+    return impl_->Get(key);
 }
-void Node::Set(KeyT key, ValT val, Node::CallbackWriteT callback) {
+
+void Node::Set(KeyT key, ValT val, Node::CallbackSetT callback) {
     impl_->Set(key, val, callback);
 }
-void Node::Delete(KeyT key, Node::CallbackWriteT callback) {
+
+void Node::Delete(KeyT key, Node::CallbackSetT callback) {
     impl_->Delete(key, callback);
 }
-void Node::Update(KeyT key, UpdateData data, Node::CallbackWriteT callback) {
+
+void Node::Update(KeyT key, UpdateData data, Node::CallbackSetT callback) {
     impl_->Update(key, data, callback);
 }
 

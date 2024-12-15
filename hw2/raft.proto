@@ -31,10 +31,9 @@ message UpdateData {
 }
 
 enum WALEntryType {
-    HEARTBEAT = 0;
-    SET = 1;
-    DELETE = 2;
-    UPDATE = 3;
+    SET = 0;
+    DELETE = 1;
+    UPDATE = 2;
 }
 
 message WALEntry {
