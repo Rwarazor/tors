@@ -208,9 +208,7 @@ class NodeImpl {
         std::cout << "Converting to leader on term " << currentTerm_ << "\n";
         status_ = Status::LEADER;
         if (log_.size() > commitIndex_) {
-            std::cout << "Found uncommited log entries, removing " << log_.size() - commitIndex_
-                      << " entries\n";
-            log_.resize(commitIndex_);
+            std::cout << "Found uncommited log entries: " << log_.size() - commitIndex_ << "\n";
         }
         nextIndex_.clear();
         for (Node::Id id = 1; id <= TOTAL_IDS; ++id) {
