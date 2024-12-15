@@ -6,6 +6,7 @@
 #include <cassert>
 #include <chrono>
 #include <cstddef>
+#include <cstdlib>
 #include <grpcpp/support/status.h>
 
 #include <atomic>
@@ -23,6 +24,7 @@ namespace raft {
 
 class NodeImpl {
     static constexpr auto ELECTION_TIMEOUT = std::chrono::seconds(5);
+    static constexpr size_t ELECTION_TIMEOUT_RANDOMNESS_MILLI = 1000;
     static constexpr auto HEARTBEAT_INTERVAL = std::chrono::seconds(1);
 
   public:
@@ -139,8 +141,8 @@ class NodeImpl {
 
     void Work() {
         std::unique_lock lock(mutex_);
-        if (status_ != Status::LEADER &&
-            std::chrono::system_clock::now() - lastLeaderTime_ > ELECTION_TIMEOUT) //
+        if (status_ != Status::LEADER && std::chrono::system_clock::now() - lastLeaderTime_ >
+                                             ELECTION_TIMEOUT + electionTimeoutRandomness) //
         {
             ConvertToCandidate();
         }
@@ -162,12 +164,16 @@ class NodeImpl {
 
     void ConvertToFollower() {
         std::cout << "Converting to follower\n";
+        electionTimeoutRandomness =
+            std::chrono::milliseconds{std::rand() % ELECTION_TIMEOUT_RANDOMNESS_MILLI};
         status_ = Status::FOLLOWER;
         votedFor_ = std::nullopt;
     }
 
     void ConvertToCandidate() {
         std::cout << "Converting to candidate, new term: " << ++currentTerm_ << "\n";
+        electionTimeoutRandomness =
+            std::chrono::milliseconds{std::rand() % ELECTION_TIMEOUT_RANDOMNESS_MILLI};
         status_ = Status::CANDIDATE;
         lastLeaderTime_ = std::chrono::system_clock::now();
         votedFor_ = ThisId();
@@ -438,6 +444,8 @@ class NodeImpl {
     size_t commitIndex_ = 0;
     size_t lastAppliedIndex_ = 0;
 
+    std::chrono::milliseconds electionTimeoutRandomness{std::rand() %
+                                                        ELECTION_TIMEOUT_RANDOMNESS_MILLI};
     decltype(std::chrono::system_clock::now()) lastLeaderTime_ = std::chrono::system_clock::now();
 
     // leaderOnly---

@@ -1,5 +1,7 @@
 #include "raft.h"
 
+#include <cstdlib>
+#include <ctime>
 #include <iostream>
 #include <unistd.h>
 
@@ -13,6 +15,7 @@ int main(int argc, char **argv) {
         std::cerr << "Expected node-id to be between 1 and " << hw2::raft::TOTAL_IDS << "\n";
         exit(1);
     }
+    std::srand(time(0));
     hw2::raft::Node node(id);
 
     std::string s;
