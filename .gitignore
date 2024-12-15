@@ -1,3 +1,6 @@
 .vscode
 build
 .cache
+
+*__pycache__*
+*_pb2*

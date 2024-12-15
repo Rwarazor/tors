@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+
+package broadcast;
+
+// A Broadcast Node
+service Node {
+    rpc Broadcast (BroadcastMessage) returns (google.protobuf.Empty);
+}
+
+message ClientMessage {
+    string key = 1;
+    oneof optional_val {
+        string val = 2;
+    }
+}
+
+message BroadcastMetadata {
+    uint64 originId = 2;
+    uint64 originSqnNum = 3;
+    repeated uint64 knownReplicatedOnHosts = 4;
+    repeated uint64 vectorClock = 5;
+}
+
+message BroadcastMessage {
+    ClientMessage message = 1;
+    BroadcastMetadata metadata = 2;
+}
