@@ -29,38 +29,36 @@ int main(int argc, char **argv) {
             std::string key, val;
             std::cin >> key >> val;
             std::cout << "Setting key " << s << " to value " << val << '\n';
-            node.Set(key, val, [&node, val, key](hw2::raft::Node::SetStatus status) {
-                if (status == hw2::raft::Node::SetStatus::OK_DONE) {
-                    std::cout << "key " << key << " successfully set to " << val << '\n';
-                } else if (status == hw2::raft::Node::SetStatus::OK_NOT_LEADER) {
-                    std::cout << "key couldn't be set because node is not a leader\n";
-                    if (node.LeaderId().has_value()) {
-                        std::cout << "Actual leader " << node.LeaderId().value() << "\n";
-                    } else {
-                        std::cout << "Currently there is no leader\n";
-                    }
+            auto status = node.SetBlocking(key, val);
+            if (status == hw2::raft::Node::SetStatus::OK_DONE) {
+                std::cout << "key " << key << " successfully set to " << val << '\n';
+            } else if (status == hw2::raft::Node::SetStatus::OK_NOT_LEADER) {
+                std::cout << "key couldn't be set because node is not a leader\n";
+                if (node.LeaderId().has_value()) {
+                    std::cout << "Actual leader " << node.LeaderId().value() << "\n";
                 } else {
-                    std::cout << "Set failed\n";
+                    std::cout << "Currently there is no leader\n";
                 }
-            });
+            } else {
+                std::cout << "Set failed\n";
+            }
         } else if (s == "delete") {
             std::string key;
             std::cin >> key;
             std::cout << "Deleting key " << s << '\n';
-            node.Delete(key, [&node, key](hw2::raft::Node::SetStatus status) {
-                if (status == hw2::raft::Node::SetStatus::OK_DONE) {
-                    std::cout << "key " << key << " successfully deleted " << '\n';
-                } else if (status == hw2::raft::Node::SetStatus::OK_NOT_LEADER) {
-                    std::cout << "key couldn't be set because node is not a leader\n";
-                    if (node.LeaderId().has_value()) {
-                        std::cout << "Actual leader " << node.LeaderId().value();
-                    } else {
-                        std::cout << "Currently there is no leader\n";
-                    }
+            auto status = node.DeleteBlocking(key);
+            if (status == hw2::raft::Node::SetStatus::OK_DONE) {
+                std::cout << "key " << key << " successfully deleted " << '\n';
+            } else if (status == hw2::raft::Node::SetStatus::OK_NOT_LEADER) {
+                std::cout << "key couldn't be set because node is not a leader\n";
+                if (node.LeaderId().has_value()) {
+                    std::cout << "Actual leader " << node.LeaderId().value();
                 } else {
-                    std::cout << "Delete failed";
+                    std::cout << "Currently there is no leader\n";
                 }
-            });
+            } else {
+                std::cout << "Delete failed";
+            }
         } else if (s == "stop") {
             break;
         }

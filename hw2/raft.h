@@ -46,6 +46,9 @@ class Node {
     void Delete(KeyT key, CallbackSetT callback);
     void Update(KeyT key, UpdateData data, CallbackSetT callback);
 
+    SetStatus SetBlocking(KeyT key, ValT val);
+    SetStatus DeleteBlocking(KeyT key);
+
   private:
     std::shared_ptr<NodeImpl> impl_;
 };

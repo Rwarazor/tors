@@ -5,6 +5,7 @@
 
 #include <cassert>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdlib>
 #include <grpcpp/support/status.h>
@@ -106,6 +107,42 @@ class NodeImpl {
 
     void Update(KeyT key, UpdateData data, Node::CallbackSetT callback) {
         throw std::runtime_error("Not implemented NodeImpl::Update");
+    }
+
+    Node::SetStatus SetBlocking(KeyT key, ValT val) {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool finished = false;
+        Node::SetStatus status;
+
+        Set(std::move(key), std::move(val), [&](Node::SetStatus status_) {
+            status = status_;
+            std::lock_guard lg(mutex);
+            finished = true;
+            cv.notify_one();
+        });
+        std::unique_lock lock(mutex);
+        while (!finished) {
+            cv.wait(lock);
+        }
+    }
+
+    Node::SetStatus DeleteBlocking(KeyT key) {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool finished = false;
+        Node::SetStatus status;
+
+        Delete(std::move(key), [&](Node::SetStatus status_) {
+            status = status_;
+            std::lock_guard lg(mutex);
+            finished = true;
+            cv.notify_one();
+        });
+        std::unique_lock lock(mutex);
+        while (!finished) {
+            cv.wait(lock);
+        }
     }
 
     ~NodeImpl() {
@@ -486,6 +523,14 @@ void Node::Delete(KeyT key, Node::CallbackSetT callback) {
 
 void Node::Update(KeyT key, UpdateData data, Node::CallbackSetT callback) {
     impl_->Update(key, data, callback);
+}
+
+Node::SetStatus Node::SetBlocking(KeyT key, ValT val) {
+    return impl_->SetBlocking(std::move(key), std::move(val));
+}
+
+Node::SetStatus Node::DeleteBlocking(KeyT key) {
+    return impl_->DeleteBlocking(std::move(key));
 }
 
 } // namespace raft
