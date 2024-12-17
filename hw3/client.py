@@ -16,6 +16,7 @@ mutex = threading.Lock()
 state_origin_id: dict = {}
 state: dict = {}
 
+
 def consume_delivered():
     while True:
         msg = node.try_get_delivered()
@@ -29,17 +30,19 @@ def consume_delivered():
         else:
             return
 
-@app.route('/', methods=["GET"])
+
+@app.route("/", methods=["GET"])
 def get():
     mutex.acquire_lock()
     response = state
     mutex.release()
     return response
 
-@app.route('/', methods=["PATCH"])
+
+@app.route("/", methods=["PATCH"])
 def patch():
     data = request.get_json()
-    assert(type(data) == dict)
+    assert type(data) == dict
     msg = ClientMessage(originId=id)
     for key, val in data.items():
         msg.keys.append(key)
@@ -48,17 +51,15 @@ def patch():
     mutex.acquire_lock()
     response = state
     mutex.release()
-    return {
-        "replicated": replicated,
-        "state": response
-    }
+    return {"replicated": replicated, "state": response}
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--id", type=int, required=True)
     parser.add_argument("--total-ids", type=int, default=3)
     args = parser.parse_args()
-    assert(args.id > 0 and args.id <= args.total_ids)
+    assert args.id > 0 and args.id <= args.total_ids
     id = args.id
     node = BroadcastNode(id=id, all_ids=[i for i in range(1, args.total_ids + 1)])
 
