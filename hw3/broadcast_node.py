@@ -9,6 +9,8 @@ from collections import deque
 from threading import Lock, Thread
 
 import datetime
+import time
+import random
 
 
 class _Node(broadcast_pb2_grpc.NodeServicer):
@@ -18,6 +20,7 @@ class _Node(broadcast_pb2_grpc.NodeServicer):
     def Broadcast(self, request, context):
         # print("Broadcast received")
         self._node.handle_broadcast_message(request)
+        time.sleep(random.randint(100, 1000) / 1000)
         return empty_pb2.Empty()
 
 
