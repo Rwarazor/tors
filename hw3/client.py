@@ -9,10 +9,25 @@ import threading
 
 app = Flask(__name__)
 
-mutex = threading.Lock()
+id = 0
 node: BroadcastNode = None
 
+mutex = threading.Lock()
+state_origin_id: dict = {}
 state: dict = {}
+
+def consume_delivered():
+    while True:
+        msg = node.try_get_delivered()
+        if msg:
+            mutex.acquire()
+            for key, val in zip(msg.keys, msg.vals):
+                if state_origin_id.get(key, 0) <= msg.originId:
+                    state[key] = val
+                    state_origin_id[key] = msg.originId
+            mutex.release()
+        else:
+            return
 
 @app.route('/', methods=["GET"])
 def get():
@@ -25,31 +40,31 @@ def get():
 def patch():
     data = request.get_json()
     assert(type(data) == dict)
-    assert(len(data) == 1)
+    msg = ClientMessage(originId=id)
     for key, val in data.items():
-        msg = ClientMessage(key=key,val=val)
-        node.submit_message(msg)
-        # TODO: wait for commit with timeout
-        # TODO: return patched state
-        return {}
+        msg.keys.append(key)
+        msg.vals.append(val)
+    replicated = node.submit_message(msg)
+    mutex.acquire_lock()
+    response = state
+    mutex.release()
+    return {
+        "replicated": replicated,
+        "state": response
+    }
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--id", type=int, required=True)
-    parser.add_argument("--total-ids", type=int, default=5)
+    parser.add_argument("--total-ids", type=int, default=3)
     args = parser.parse_args()
     assert(args.id > 0 and args.id <= args.total_ids)
+    id = args.id
+    node = BroadcastNode(id=id, all_ids=[i for i in range(1, args.total_ids + 1)])
 
-    node = BroadcastNode(id=args.id, all_ids=[i for i in range(1, args.total_ids + 1)])
-
-    def consume_delivery():
+    def keep_consuming_delivered():
         while True:
-            val = node.try_get_delivered()
-            if val:
-                mutex.acquire()
-                # TODO: conflict resolution
-                state[val.message.key] = val.message.val
-                mutex.release()
+            consume_delivered()
 
-    threading.Thread(target=consume_delivery).start()
+    threading.Thread(target=keep_consuming_delivered).start()
     app.run(port=8000 + args.id)

@@ -26,29 +26,37 @@ class _Node(broadcast_pb2_grpc.NodeServicer):
         return empty_pb2.Empty()
 
 class BroadcastNode():
+    def _init_grpc(self):
+        print("creating grpc server")
+        port = str(50000 + self._id)
+        self._grpc_server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+        broadcast_pb2_grpc.add_NodeServicer_to_server(_Node(self), self._grpc_server)
+        self._grpc_server.add_insecure_port("[::]:" + port)
+
+        print("creating grpc stubs")
+        self._stubs = {id: broadcast_pb2_grpc.NodeStub(grpc.insecure_channel("localhost:" + str(50000 + id))) for id in self._all_ids if id != self._id}
+        self._send_queues: Dict[int, deque] = {id: deque() for id in self._all_ids if id != self._id}
+        self._send_last_unsuccessfull_time = {id: datetime.datetime(1,1,1) for id in self._all_ids if id != self._id}
+
 
     def __init__(self, id: int, all_ids: List[int]):
         self._id = id
         self._all_ids = sorted(all_ids)
 
         self._next_sequence_number = 1
-        self._vector_clock= [0 for _ in range(len(all_ids))]
+        # delivered messages counters
+        self._vector_clock = [0 for _ in range(len(all_ids))]
 
         self._replicated_hosts: Dict[MessageUid, Set[int]] = {}
         self._not_commited_messages: Dict[MessageUid, broadcast_pb2.BroadcastMessage] = {}
         self._commited_messages: Dict[MessageUid, broadcast_pb2.BroadcastMessage] = {}
         self._delivered_messages: deque[broadcast_pb2.BroadcastMessage] = deque()
 
-        print("creating grpc stubs")
-        self._stubs = {id: broadcast_pb2_grpc.NodeStub(grpc.insecure_channel("localhost:" + str(50000 + id))) for id in self._all_ids if id != self._id}
-        self._send_queues: Dict[int, deque] = {id: deque() for id in self._all_ids if id != self._id}
-        self._send_last_unsuccessfull_time = {id: datetime.datetime(1,1,1) for id in self._all_ids if id != self._id}
         self._mutex = Lock()
+        self._pending_requests_locks: Dict[int, Lock] = {}
 
-        port = str(50000 + id)
-        self._grpc_server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-        broadcast_pb2_grpc.add_NodeServicer_to_server(_Node(self), self._grpc_server)
-        self._grpc_server.add_insecure_port("[::]:" + port)
+        self._init_grpc()
+
         print("starting grpc server")
         self._grpc_server.start()
 
@@ -57,7 +65,7 @@ class BroadcastNode():
         self._workThread.start()
 
 
-    def submit_message(self, msg: broadcast_pb2.ClientMessage):
+    def submit_message(self, msg: broadcast_pb2.ClientMessage, timeout=5) -> bool:
         self._mutex.acquire()
         print("client submitted a message")
         broadcast_msg = broadcast_pb2.BroadcastMessage()
@@ -66,9 +74,6 @@ class BroadcastNode():
         broadcast_msg.metadata.originSqnNum = self._next_sequence_number; self._next_sequence_number += 1
         broadcast_msg.metadata.knownReplicatedOnHosts.append(self._id)
         # all messages delivered before current happen before it
-        vector_clock = self._vector_clock.copy()
-        # all messages on the same node happen before it
-        vector_clock[self._all_ids.index(self._id)] = broadcast_msg.metadata.originSqnNum - 1
         broadcast_msg.metadata.vectorClock.extend(self._vector_clock)
 
         for id in self._all_ids:
@@ -77,22 +82,44 @@ class BroadcastNode():
         msg_uid = MessageUid(broadcast_msg.metadata.originId, broadcast_msg.metadata.originSqnNum)
         self._replicated_hosts[msg_uid] = set([self._id])
         self._not_commited_messages[msg_uid] = broadcast_msg
+        self._pending_requests_locks[broadcast_msg.metadata.originSqnNum] = Lock()
+        self._pending_requests_locks[broadcast_msg.metadata.originSqnNum].acquire()
+
+        # client message is instantly delivered
+        self._delivered_messages.append(broadcast_msg)
+        self._vector_clock[self._all_ids.index(self._id)] += 1
         self._mutex.release()
+
+        # wait for actual delivery
+        if self._pending_requests_locks[broadcast_msg.metadata.originSqnNum].acquire(timeout=timeout):
+            self._pending_requests_locks.pop(broadcast_msg.metadata.originSqnNum)
+            return True
+        else:
+            # datarace?
+            self._pending_requests_locks.pop(broadcast_msg.metadata.originSqnNum)
+            return False
+
 
     def try_get_delivered(self):
         self._mutex.acquire()
         acquired = None
         if len(self._delivered_messages) > 0:
             print("client consumed a delivered message")
-            acquired = self._delivered_messages.popleft()
+            acquired = self._delivered_messages.popleft().message
         self._mutex.release()
         return acquired
 
     def handle_broadcast_message(self, broadcast_msg: broadcast_pb2.BroadcastMessage):
-        # TODO: detect delivered messages (broadcast may have been received from stale node) cleanup self._replicated_hosts
         self._mutex.acquire()
         print("incoming broadcast message")
         msg_uid = MessageUid(broadcast_msg.metadata.originId, broadcast_msg.metadata.originSqnNum)
+
+        # if all([broadcast_msg.metadata.vectorClock[i] <= self._vector_clock[i] for i in range(len(self._all_ids))]):
+        #     ind = self._all_ids.index(broadcast_msg.metadata.originId)
+        #     if broadcast_msg.metadata.vectorClock[ind] < self._vector_clock[ind]:
+        #         # broadcast has been received about already delivered message
+        #         return
+
         is_first_time = not (msg_uid in self._replicated_hosts)
 
         old_replicated_hosts = self._replicated_hosts[msg_uid] if msg_uid in self._replicated_hosts else set()
@@ -137,10 +164,15 @@ class BroadcastNode():
                     break
 
 
-    def deliver(self, msg: broadcast_pb2.BroadcastMessage):
+    def deliver(self, msg: broadcast_pb2.BroadcastMessage, allow_deliver_self=False):
         print("message delivered")
-        self._delivered_messages.append(msg)
-        self._vector_clock[self._all_ids.index(msg.metadata.originId)] += 1
+        if allow_deliver_self or msg.metadata.originId != self._id:
+            self._delivered_messages.append(msg)
+            self._vector_clock[self._all_ids.index(msg.metadata.originId)] += 1
+        else: # try unlock pending request
+            lock = self._pending_requests_locks.get(msg.metadata.originSqnNum, None)
+            if not lock is None:
+                lock.release()
 
 
     def work(self):

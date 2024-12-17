@@ -10,10 +10,9 @@ service Node {
 }
 
 message ClientMessage {
-    string key = 1;
-    oneof optional_val {
-        string val = 2;
-    }
+    uint64 originId = 1;
+    repeated string keys = 2;
+    repeated string vals = 3;
 }
 
 message BroadcastMetadata {
