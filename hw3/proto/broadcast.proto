@@ -10,7 +10,6 @@ service Node {
 }
 
 message ClientMessage {
-    uint64 originId = 1;
     repeated string keys = 2;
     repeated string vals = 3;
 }

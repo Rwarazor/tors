@@ -38,6 +38,12 @@ class MessageState:
     is_delivered: bool = False
 
 
+@dataclass
+class CausalityInfo:
+    originId: int
+    vector_clock: list[int]
+
+
 def _get_msg_uid(msg: broadcast_pb2.BroadcastMessage):
     return MessageUid(msg.metadata.originId, msg.metadata.originSqnNum)
 
@@ -65,6 +71,15 @@ class BroadcastNode:
             id: datetime.datetime(1, 1, 1) for id in self._all_ids if id != self._id
         }
 
+    def _spawn_sending_threads(self):
+        print("starting send threads")
+        self._sendThreads = {}
+        for id in self._all_ids:
+            if id != self._id:
+                self._sendThreads[id] = Thread(target=self.keep_sending, args=[id])
+                self._sendThreads[id].start()
+
+
     def __init__(self, id: int, all_ids: List[int]):
         self._id = id
         self._all_ids = sorted(all_ids)
@@ -75,19 +90,17 @@ class BroadcastNode:
 
         self._message_states: Dict[MessageUid, MessageState] = {}
         self._commited_messages: set[MessageUid] = set()
-        self._delivered_messages: deque[broadcast_pb2.ClientMessage] = deque()
+        self._delivered_messages: deque[broadcast_pb2.BroadcastMessage] = deque()
 
         self._mutex = Lock()
         self._pending_requests_locks: Dict[int, Lock] = {}
 
         self._init_grpc()
 
+        self._spawn_sending_threads()
+
         print("starting grpc server")
         self._grpc_server.start()
-
-        self._workThread = Thread(target=self.work)
-        print("starting work thread")
-        self._workThread.start()
 
     def submit_message(self, msg: broadcast_pb2.ClientMessage, timeout=5) -> bool:
         self._mutex.acquire()
@@ -126,14 +139,17 @@ class BroadcastNode:
             self._pending_requests_locks.pop(broadcast_msg.metadata.originSqnNum)
             return False
 
-    def try_get_delivered(self):
+    def try_get_delivered(self) -> tuple[broadcast_pb2.ClientMessage, CausalityInfo]:
         self._mutex.acquire()
         acquired = None
+        causality = None
         if len(self._delivered_messages) > 0:
             print("client consumed a delivered message")
-            acquired = self._delivered_messages.popleft()
+            msg = self._delivered_messages.popleft()
+            acquired = msg.message
+            causality = CausalityInfo(originId=msg.metadata.originId, vector_clock=list(msg.metadata.vectorClock))
         self._mutex.release()
-        return acquired
+        return acquired, causality
 
     def handle_broadcast_message(self, broadcast_msg: broadcast_pb2.BroadcastMessage):
         self._mutex.acquire()
@@ -218,7 +234,7 @@ class BroadcastNode:
             assert not self._message_states[msg_uid].is_delivered
             self._message_states[msg_uid].is_delivered = True
 
-            self._delivered_messages.append(msg.message)
+            self._delivered_messages.append(msg)
             self._vector_clock[self._all_ids.index(msg.metadata.originId)] += 1
         else:  # try unlock pending request
             print("finishing pending request")
@@ -226,24 +242,19 @@ class BroadcastNode:
             if not lock is None:
                 lock.release()
 
-    def work(self):
+    def keep_sending(self, other_id):
         while True:
-            self._mutex.acquire()
-            for id, queue in self._send_queues.items():
-                if len(queue) > 0 and (
-                    datetime.datetime.now() - self._send_last_unsuccessfull_time[id]
-                ) > datetime.timedelta(seconds=5):
-                    # print("sending message to node", id)
-                    msg = queue[0]
-                    self._mutex.release()
-                    failed = False
-                    try:
-                        self._stubs[id].Broadcast(msg)
-                    except:
-                        failed = True
-                    self._mutex.acquire()
-                    if failed:
-                        self._send_last_unsuccessfull_time[id] = datetime.datetime.now()
-                    else:
-                        self._send_queues[id].remove(msg)
-            self._mutex.release()
+            while len(self._send_queues[other_id]) > 0 and (
+                datetime.datetime.now() - self._send_last_unsuccessfull_time[other_id]
+            ) > datetime.timedelta(seconds=1):
+                msg = self._send_queues[other_id][0]
+                failed = False
+                try:
+                    self._stubs[other_id].Broadcast(msg)
+                except:
+                    failed = True
+                if failed:
+                    self._send_last_unsuccessfull_time[other_id] = datetime.datetime.now()
+                else:
+                    self._send_queues[other_id].remove(msg)
+            time.sleep(0.1)

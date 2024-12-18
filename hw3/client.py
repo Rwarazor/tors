@@ -1,4 +1,4 @@
-from broadcast_node import BroadcastNode
+from broadcast_node import BroadcastNode, CausalityInfo
 from proto.broadcast_pb2 import ClientMessage
 
 from flask import Flask, request, jsonify
@@ -6,6 +6,7 @@ from flask import Flask, request, jsonify
 import argparse
 import json
 import threading
+import time
 
 app = Flask(__name__)
 
@@ -13,19 +14,41 @@ id = 0
 node: BroadcastNode = None
 
 mutex = threading.Lock()
-state_origin_id: dict = {}
+state_causality: dict = {}
 state: dict = {}
+
+
+def strictly_later(causality_left: CausalityInfo, causality_right: CausalityInfo):
+    return all(
+        [
+            causality_left.vector_clock[i] >= causality_right.vector_clock[i]
+            for i in range(len(causality_left.vector_clock))
+        ]
+    ) and any(
+        [
+            causality_left.vector_clock[i] > causality_right.vector_clock[i]
+            for i in range(len(causality_left.vector_clock))
+        ]
+    )
+
+def later(causality_left: CausalityInfo, causality_right: CausalityInfo):
+    if strictly_later(causality_left, causality_right):
+        return True
+    if strictly_later(causality_right, causality_left):
+        return False
+    return causality_left.originId > causality_right.originId
 
 
 def consume_delivered():
     while True:
-        msg = node.try_get_delivered()
+        msg, causality = node.try_get_delivered()
         if msg:
+            print("causality_received", causality)
             mutex.acquire()
             for key, val in zip(msg.keys, msg.vals):
-                if state_origin_id.get(key, 0) <= msg.originId:
+                if not key in state_causality or later(causality, state_causality[key]):
                     state[key] = val
-                    state_origin_id[key] = msg.originId
+                    state_causality[key] = causality
             mutex.release()
         else:
             return
@@ -43,11 +66,12 @@ def get():
 def patch():
     data = request.get_json()
     assert type(data) == dict
-    msg = ClientMessage(originId=id)
+    msg = ClientMessage()
     for key, val in data.items():
         msg.keys.append(key)
         msg.vals.append(val)
     replicated = node.submit_message(msg)
+    consume_delivered()
     mutex.acquire_lock()
     response = state
     mutex.release()
@@ -66,6 +90,7 @@ if __name__ == "__main__":
     def keep_consuming_delivered():
         while True:
             consume_delivered()
+        time.sleep(0.1)
 
     threading.Thread(target=keep_consuming_delivered).start()
     app.run(port=8000 + args.id)
